@@ -1,0 +1,547 @@
+---
+title: "R Notebook"
+author: "Shivanand Iyer"
+output:
+  word_document: default
+  html_notebook: default
+---
+
+
+```{r Load Libraries, echo=FALSE, message=FALSE, warning=FALSE}
+#-------------------------------------------------------------------------------------------
+#Load libraries
+#-------------------------------------------------------------------------------------------
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(caret)
+library(Metrics)
+library(pROC)
+library(ROCR)
+library(randomForest)
+library(pdp)
+library(corrplot)
+library(car)
+```
+
+## Purpose
+
+Build a classification model to target existing customers for a re-purchase campaign of an auto manufacturer. The output of the model will be a binary prediction of which customers are most likely to repurchase.
+
+
+## Dataset
+
+There are two data set provided for this campaign targeting exercise - one for training the classification model and other for validation. Both consists in a csv file and describes the the customer demographics, previous purchase history and car and servicing details. There are 17 variables in the training data set and 131337 observations. 
+
+```{r Import Data File,echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Importing Repurchase_Training.csv File
+#-------------------------------------------------------------------------------------------
+
+repurchase_raw_data<-read.csv("~/Documents/UTS/02_Courses/36106_DAM/Assignment/Assignment_1/Assignment1B/Raw Data/repurchase_training.csv",header = TRUE)
+
+#repurchase_raw_data<-read.csv("repurchase_training.csv",header = TRUE)
+
+```
+
+```{r Check the data, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Check the data
+#-------------------------------------------------------------------------------------------
+dim(repurchase_raw_data)
+
+summary(repurchase_raw_data)
+```
+
+
+## Exploratory Data Analysis(EDA)
+
+Looking at the distribution of the data, it is observed that 
++ More than 80% of the data in age_band is missing 
++ 50% of the data in the gender variable is missing 
++ The response variable - Target is imbalanced
+
+This might have an impact on the model and may need to be handled appropriately. All the numeric variables have a reasonably broad distribution with no missing data or outliers in them.
+
+**Distribution of categorical variables**
+```{r Exploratory Data Analysis, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Perform Exploratory Data Analysis on repurchase_training dataset
+#-------------------------------------------------------------------------------------------
+qplot(as.factor(repurchase_raw_data$Target))
+qplot(repurchase_raw_data$age_band)
+qplot(repurchase_raw_data$gender)
+ggplot(repurchase_raw_data,aes(car_segment))+geom_bar()
+repurchase_raw_data%>%group_by(car_model)%>%summarise(Customer_Count=n_distinct(ID))%>%arrange(desc(Customer_Count))
+repurchase_raw_data%>%group_by(car_segment)%>%summarise(Customer_Count=n())%>%arrange(desc(Customer_Count))
+repurchase_raw_data%>%group_by(age_band)%>%summarise(cnt=n())
+repurchase_raw_data%>%group_by(ID)%>%summarise(Duplicates=n())%>%filter(Duplicates >1)
+```
+
+**Distribution of numeric variables**
+```{r Plot Decile Values, echo=FALSE}
+qplot(as.factor(repurchase_raw_data$age_of_vehicle_years))
+qplot(as.factor(repurchase_raw_data$sched_serv_warr))
+qplot(as.factor(repurchase_raw_data$non_sched_serv_warr))
+qplot(as.factor(repurchase_raw_data$sched_serv_warr))
+qplot(as.factor(repurchase_raw_data$total_paid_services))
+qplot(as.factor(repurchase_raw_data$total_services))
+qplot(as.factor(repurchase_raw_data$mth_since_last_serv))
+qplot(as.factor(repurchase_raw_data$annualised_mileage))
+qplot(as.factor(repurchase_raw_data$num_dealers_visited))
+qplot(as.factor(repurchase_raw_data$num_serv_dealer_purchased))
+```
+
+
+<!-- **Check for colinearity of numeric variables in the data set** -->
+
+# ```{r Checking for colinearity in the data, echo=FALSE}
+# correlations <- cor(repurchase_raw_data[,7:17])
+# corrplot(correlations, method="circle")
+# ```
+
+## Data Partitioning and Wrangling
+
+The data is split into training and testing sets randomly, with 75-25 split criteria. A summary of the train and test data set is given below. 
+
+```{r change response variable to Factor, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Convert Target Variable to Factor type
+#-------------------------------------------------------------------------------------------
+repurchase_raw_data$Target=as.factor(repurchase_raw_data$Target)
+```
+
+
+```{r Partition the dataset, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Partition the data
+#-------------------------------------------------------------------------------------------
+set.seed(42)
+train_partition <- createDataPartition(repurchase_raw_data$ID, p = 0.75, list = FALSE)
+training <- repurchase_raw_data[train_partition, ]
+testing <- repurchase_raw_data[-train_partition, ]
+
+```
+
+
+```{r Check the partitions, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Verify the data in train and test partitions
+#-------------------------------------------------------------------------------------------
+dim(training)
+dim(testing)
+```
+
+## Model Build - Logistic Regression
+
+
+### Logistic Regression Model without Cross Validation
+
+The training data set is then fitted into a Logistic Regression model and evaluated. Target is the response variable and all other variables except ID are treated as predictors. ID column is excluded from the model since its an identity column and has no business relevance. There are two issues highlighted by the model summary below. 
+
++ Co-efficient for Car Segment were returned as not defined because of singularities
++ non_sched_serv_warr variable was the least significant
+
+```{r Train the Logistic Regression Model without CV and all predictors,echo=FALSE}
+
+glm_fit<-glm(formula=Target ~. -ID, family=binomial, data=training)
+summary(glm_fit)
+
+```
+
+Car Segment and non_sched_serv_warr are removed and the model is evaluated again. There was a slight improvement in the AIC value - 15582 as shown in the evaluation summary below. The following features were excluded from this model -
+
+* ID
+* Car_Segment
+* Non_Sched_serv_warr
+
+
+
+```{r Train the Logistic Regression Model without CV,echo=FALSE}
+
+glm_fit<-glm(formula=Target ~. -ID -car_segment  -non_sched_serv_warr, family=binomial, data=training)
+summary(glm_fit)
+
+```
+** Check for collinearity **
+
+Below is the summary of the results from the Variance Inflation factor(VIF) test. VIF quantifies the extent of correlation between the predictors in the model. Higher values signify that it is difficult to impossible to assess accurately the contribution of predictors to a model
+As seen below, Total Paid Services and Non Scheduled Paid Services is shown to have a relatively higher VIF value of 3.4 but not significant enough to alter the model. 
+```{r Colinearity Check,echo=FALSE}
+vif(glm_fit)
+
+```
+
+
+### Logistic Regression model with K fold Cross Validation
+
+The model is trained again using a 5 fold cross validation. Cross Validation technique protects against over fitting when the training data set is limited and also provides a better estimate of error on out of sample data sets. based on the results from the previous model, the following variables were excluded from this model -
+
+
+* ID
+* Car_Segment
+* Non_Sched_serv_warr
+
+
+
+```{r Train Control - K fold Cross Validation, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Set training parameters - 5 fold CV
+#-------------------------------------------------------------------------------------------
+fit_control <- trainControl(## K-fold CV
+                             method = "cv",
+                             number = 5,savePredictions = TRUE)
+```
+
+
+
+```{r Logictic Regression, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Run Logistic regression -Train the model
+#-------------------------------------------------------------------------------------------
+
+lreg_fit<-train(Target ~. -ID -car_segment -non_sched_serv_warr, data=training, method="glm", family=binomial(), trControl=fit_control)
+
+```
+
+```{r Model Evaluation ,echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Evaluate the Model
+#-------------------------------------------------------------------------------------------
+summary(lreg_fit)
+lreg_fit
+```
+
+**Key Observations from the CV Classification model**
+
++ The following variables have high p-values suggesting a weak association of the predictor variables with the probability of customer re-purchase. 
+
+** genderNULL, car_modelmodel_14, car_modelmodel_17, car_modelmodel_18, car_modelmodel_19, car_modelmodel_9 **
+
+
++ Dummy variable car_modelmodel_15 and car_modelmodel_19 have negative co-efficient of -11 suggesting with all other variables being equal, customers with Car Model 14 and 19 is less likely to re-purchase. The re-purchase odds reduce by 11 for Customers owning car model 14 and 19.
+
++ AIC value is the same for CV and Non CV models
+
++ Model with and without cross validation(CV) returns similar results.
+
+## Model Evaluation - Logistic Regression
+
+### Variable of Importance
+
+The plot below shows the relative importance of individual predictors in the model that are more closely related to the dependent variable and contribute more for variation of the dependent variable. To assess the relative importance of individual predictors in the model, the absolute value of the t-statistic for each model parameter is considered for regression models. 
+
+* Total Services, Annualised Mileage and Number of Services had at the dealer shows as strong association to have a high probability of re-purchase
+
+* Dummy variables - genderNULL, car_modelmodel_14, car_modelmodel_17, car_modelmodel_18, car_modelmodel_19, car_modelmodel_9 are low in the list of importance. 
+
+
+```{r Plotting variable of Importance,echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Plot Variable of importance
+#-------------------------------------------------------------------------------------------
+plot(varImp(lreg_fit),top = 20)
+```
+
+```{r}
+#lreg_pred<-predict(lreg_fit,testing)
+```
+
+
+
+
+```{r Predict on Test Dataset, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Fit the model on the test data partition
+#-------------------------------------------------------------------------------------------
+lreg_prob<-predict(lreg_fit,testing,type = "prob")
+```
+
+
+```{r message=FALSE, warning=FALSE}
+# 
+# rocCurve   <- roc(response = testing$Target,
+#                       predictor = lreg_prob[, "1"],
+#                       levels = rev(levels(testing$Target)))
+# plot(rocCurve, print.thres = "best")
+```
+
+### Validation of Predicted Values : Confusion Matrix, F1, Precision, Recall and AUC
+
+The predicted target vs the observed data is shown below. Key metrics from the model are -
+
+**High accuracy rate of 97%** 
+**Precision is 98%** 
+**Recall is high at 99%** 
+** F1 Score is 0.98**
+** AUC - 0.90 **
+
+These metrics will be used to compare the Model performance with the Tree based models used in the next sections 
+
+```{r Confusion Matrix, echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Calculate confusion matrix
+#-------------------------------------------------------------------------------------------
+threshold <- 0.5
+predictor      <- factor( ifelse(lreg_prob[, "1"] > threshold, 1, 0),ordered = TRUE )
+#pred      <- relevel(predictor, "yes")   # you may or may not need this; I did
+lreg_cfm<-confusionMatrix(predictor,testing$Target)
+lreg_cfm
+
+```
+
+```{r Evaluation Metric F1, Precision, Recall, echo=FALSE}
+# ---------------------------------------------------------------------------------------------------
+# Compute Precision, Recall, F1
+# ---------------------------------------------------------------------------------------------------
+lreg_cfm$byClass
+```
+
+
+```{r Calculating AUC,message=FALSE, warning=FALSE,echo=FALSE}
+#-------------------------------------------------------------------------------------------
+#Calculate AUC and Plot ROC
+#-------------------------------------------------------------------------------------------
+lreg_pred <- prediction(lreg_prob[,2], testing$Target)
+plot(performance(lreg_pred, measure = "tpr", x.measure = "fpr"),main="ROC Curve for GLM Model",col=2,lwd=2)
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+lreg_auc <- performance(lreg_pred, measure = "auc")
+lreg_auc <- lreg_auc@y.values[[1]]
+```
+**AUC Value**
+```{r AUC Value,echo=FALSE}
+lreg_auc
+```
+
+## Model Build - Random Forest
+
+The model is trained again using Random Forest to evaluate the best performing model. The best performing model will be used to validate an out of sample dataset. Model summary and Variable Importance Plot is as shown below
+
+```{r Training a random forest model, echo=FALSE}
+
+# ----------------------------------------------------------------------------------------------------------
+# Model the dataset using Tree based Model
+# ----------------------------------------------------------------------------------------------------------
+
+rf_fit <- randomForest(Target ~. -ID -car_segment -non_sched_serv_warr, data = training, ntree = 1000, importance = TRUE)
+
+```
+
+```{r Evaluate the model, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Summarise the model
+#----------------------------------------------------------------------------------------------------------
+summary(rf_fit)
+#rf_fit
+print(rf_fit)
+```
+
+
+### Variable of Importance for Random Forest Model
+
+The first plot - Mean Decrease Accuracy shows the variables with a large mean decrease in accuracy are more important for classification of the data. The more the accuracy decreases by excluding a single variable, the more important the variable is supposed to be deemed.
+The second plot - Mean Decrease Gini measures the average gain of purity by splits of a given variable. It calculates each feature importance as the sum over the number of splits (across all tress) that include the feature, proportionally to the number of samples it splits.
+
+Based on the Mean Degree Accuracy plot shown below, the top 5 important variables are -
+
+** annualised mileage **
+** mth_since_last_serv**
+** gender **
+** age_of_vehicle_years **
+** num_serv_dealer_purchased **
+
+
+
+```{r Variable of Importance - Random Forest,echo=FALSE}
+varImpPlot(rf_fit)
+```
+
+
+```{r Fit the model on the test set, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Fit the model
+#----------------------------------------------------------------------------------------------------------
+rf_pred<-predict(rf_fit,testing)
+```
+
+
+```{r Calculate the probability, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Fit the model using probability class
+#----------------------------------------------------------------------------------------------------------
+rf_pred_prob<-predict(rf_fit,testing,type = "prob")
+```
+
+## Model Evaluation - Random Forest
+
+
+The Model classification rate(confusion Matrix), ROC Curve and other key metrics from the model are as seen below-
+
+**Accuracy rate of 99.4%** 
+**Precision is 99.52%** 
+**Recall is high at 99.85%** 
+** F1 Score is 0.99**
+** AUC - 0.96 **
+
+
+```{r Confusion Matrix for RF Model, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#confusion Matrix
+#----------------------------------------------------------------------------------------------------------
+rf_cfm<-confusionMatrix(rf_pred,factor(testing$Target,ordered = TRUE))
+rf_cfm
+rf_auc<-auc(rf_pred,factor(testing$Target,ordered = TRUE))
+rf_cfm$byClass
+rf_auc
+```
+
+```{r ROCCurve,echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Plot the ROC curve
+#----------------------------------------------------------------------------------------------------------
+
+rf_perf = prediction(rf_pred_prob[,2],testing$Target)
+
+# 1. True Positive and Negative Rate
+tpr_fpr = performance(rf_perf, "tpr","fpr")
+
+# 2. Plot the ROC curve
+plot(tpr_fpr,main="ROC Curve for Random Forest Model",col=2,lwd=2)
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+
+
+** Partial Dependence Plots **
+
+Partial Dependence plots for the top 5 predictors are shown below.They help to determine the direct relationship between the response variable and the features of interest.
+
+```{r Partial Dependence Plots, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Partial Dependency Plots
+#----------------------------------------------------------------------------------------------------------
+#partial(x=rf_fit, pred.data=training, x.var=annualised_mileage)
+autoplot(partial(rf_fit, pred.var=c("annualised_mileage"), chull = TRUE))
+autoplot(partial(rf_fit, pred.var=c("mth_since_last_serv"), chull = TRUE))
+autoplot(partial(rf_fit, pred.var=c("gender"), chull = TRUE))
+autoplot(partial(rf_fit, pred.var=c("num_serv_dealer_purchased"), chull = TRUE))
+autoplot(partial(rf_fit, pred.var=c("age_of_vehicle_years"), chull = TRUE))
+
+```
+
+
+## Comparison of K Fold CV Logistic Regression Model and Random Forest
+
+The random forest model and the K Fold CV Logistic Regression Model is compared using the below parameters. As observed, the sensitivity, specificity, precision, recall and F1 are higher for the Random Forest model. Also the Area Under the Curve(AUC) is 0.966 for Random Forest model as compared to 0.90 for the Logistic Regression model. 
+
+```{r}
+model_compare_metrics<-cbind(data.frame(rf_cfm$byClass),data.frame(lreg_cfm$byClass))
+model_compare_metrics_auc<-cbind(rf_auc,lreg_auc)
+model_compare_metrics
+model_compare_metrics_auc
+```
+
+```{r ROC Curve comparison of RF and LREG Model,echo=FALSE}
+plot(tpr_fpr,main="ROC Curve for Random Forest and Logistic Regression model",col=3,lwd=2)
+#abline(a=0,b=1,lwd=2,lty=2,col="gray")
+plot(performance(lreg_pred, measure = "tpr", x.measure = "fpr"),main="ROC Curve for GLM Model",col=2,lwd=2,add=TRUE)
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+legend("bottomright", legend=c("Random Forest", "Logistic Regression"),
+       col=c("green", "red"), lty=1:1, cex=0.8)
+
+
+```
+
+
+## Making Predictions using the best model 
+
+Based on the model metrics comparison discussed in the previous section, Random Forest is chosen to be the best performing model for making predictions on the repurchase campaign data set. Shown below is the summary of the Repurchase Validation Data Set that is used for making a customer repurchase prediction using the random forest model.  
+```{r Read the data set, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Import the Repurchase Validation data set
+#----------------------------------------------------------------------------------------------------------
+
+repurchase_validation_raw_data<-read.csv("~/Documents/UTS/02_Courses/36106_DAM/Assignment/Assignment_1/Assignment1B/Raw Data/repurchase_validation.csv",header = TRUE)
+
+#repurchase_validation_raw_data<-read.csv("repurchase_validation.csv",header = TRUE)
+```
+
+
+```{r Check the data - Repurchase Validation, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Check the data
+#----------------------------------------------------------------------------------------------------------
+glimpse(repurchase_validation_raw_data)
+```
+
+
+```{r Create sequence column ID,echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Create ID column and target column in the data set
+#----------------------------------------------------------------------------------------------------------
+repurchase_validation_raw_data$ID <- seq.int(nrow(repurchase_validation_raw_data))
+lvl<-c("0","1")
+repurchase_validation_raw_data$Target <- factor(lvl,levels=c("0","1"))
+```
+
+
+```{r EDA on Validation Data Set- Plotting Decile Values,echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Explore the data
+#----------------------------------------------------------------------------------------------------------
+ggplot(repurchase_validation_raw_data,aes(age_band))+geom_bar()
+ggplot(repurchase_validation_raw_data,aes(gender))+geom_bar()
+#qplot(repurchase_validation_raw_data$age_band)
+
+#qplot(repurchase_validation_raw_data$gender)
+repurchase_validation_raw_data%>%group_by(car_model)%>%summarise(Customer_Count=n_distinct(ID))%>%arrange(desc(Customer_Count))
+repurchase_validation_raw_data%>%group_by(car_segment)%>%summarise(Customer_Count=n())%>%arrange(desc(Customer_Count))
+ggplot(repurchase_validation_raw_data,aes(car_segment))+geom_bar()
+qplot(as.factor(repurchase_validation_raw_data$age_of_vehicle_years))
+qplot(as.factor(repurchase_validation_raw_data$sched_serv_warr))
+qplot(as.factor(repurchase_validation_raw_data$non_sched_serv_warr))
+qplot(as.factor(repurchase_validation_raw_data$sched_serv_warr))
+qplot(as.factor(repurchase_validation_raw_data$total_paid_services))
+qplot(as.factor(repurchase_validation_raw_data$total_services))
+qplot(as.factor(repurchase_validation_raw_data$mth_since_last_serv))
+qplot(as.factor(repurchase_validation_raw_data$annualised_mileage))
+qplot(as.factor(repurchase_validation_raw_data$num_dealers_visited))
+qplot(as.factor(repurchase_validation_raw_data$num_serv_dealer_purchased))
+```
+
+```{r Evaluating the rf model on validation dataset,echo=FALSE}
+
+repurchase_validation_raw_data <- rbind(repurchase_raw_data[1, ] , repurchase_validation_raw_data)
+repurchase_validation_raw_data<-repurchase_validation_raw_data[-1,]
+```
+
+```{r evaluate model and calculate probability, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Fit the RF model
+#----------------------------------------------------------------------------------------------------------
+rf_validation_pred<-predict(rf_fit,repurchase_validation_raw_data)
+repurchase_validation_raw_data$target_class<-rf_validation_pred
+```
+
+
+```{r evaluate model and calculate probability for validation set, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#calculate Evaluation Metrics
+#----------------------------------------------------------------------------------------------------------
+rf_validation_pred_prob<-predict(rf_fit,repurchase_validation_raw_data,type="prob")
+repurchase_validation_raw_data$target_probability<-rf_validation_pred_prob[,2]
+```
+
+
+### Output File 
+
+The output file with ID, Target Class and Target Probability is attached below. 
+
+```{r write to csv file, echo=FALSE}
+#----------------------------------------------------------------------------------------------------------
+#Write output to CSV
+#----------------------------------------------------------------------------------------------------------
+write.csv((repurchase_validation_raw_data%>%select(ID=ID,target_probability=target_probability,target_class=target_class)),file="~/Documents/UTS/02_Courses/36106_DAM/Assignment/Assignment_1/Assignment1B/Raw Data/repurchase_validation_13293283.csv",row.names = FALSE)
+
+```
+
